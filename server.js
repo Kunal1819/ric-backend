@@ -4,6 +4,8 @@ const cors = require('cors');
 const profilesRouter = require('./routes/profiles');
 
 const app = express();
+const meRouter = require('./routes/me');
+app.use('/api/me', meRouter);
 
 app.use(cors());
 app.use(express.json());
