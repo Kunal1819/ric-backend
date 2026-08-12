@@ -2,6 +2,13 @@ const requireAuth = require('../middleware/requireAuth');
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
+function normalizePhone(raw) {
+  if (!raw) return null;
+  const digits = raw.replace(/[^\d]/g, ''); 
+  if (digits.length === 10) return '91' + digits;      
+  if (digits.length === 12 && digits.startsWith('91')) return digits;
+  return digits; 
+}
 
 // 1. GET LISTING — PUBLIC (No requireAuth lock here)
 router.get('/', async (req, res) => {
@@ -58,7 +65,7 @@ router.post('/', requireAuth, async (req, res) => {
       `insert into profiles (full_name, branch, year, pitch, tags, email, phone, user_id)
        values ($1, $2, $3, $4, $5, $6, $7, $8)
        returning id, full_name, branch, year, pitch, tags, created_at`,
-      [full_name, branch, year, pitch, tagArray, email, phone || null, req.user.id]
+      [full_name, branch, year, pitch, tagArray, email, normalizePhone(phone), req.user.id]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
