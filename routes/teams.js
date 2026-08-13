@@ -6,38 +6,45 @@ const requireAuth = require('../middleware/requireAuth');
 // ── List teams (Registered Teams tab) ──────────────────────────────
 // Public — no auth needed to browse who's registered and who's still
 // looking for teammates.
+// 1. GET LISTING — PUBLIC
 router.get('/', async (req, res) => {
   const { competition_id } = req.query;
   try {
     const teamsResult = await pool.query(
-      `select t.*, c.name as competition_name
-       from teams t join competitions c on c.id = t.competition_id
-       ${competition_id ? 'where t.competition_id = $1' : ''}
+      `select t.*, c.name as competition_name 
+       from teams t join competitions c on c.id = t.competition_id 
+       ${competition_id ? 'where t.competition_id = $1' : ''} 
        order by t.created_at desc`,
       competition_id ? [competition_id] : []
     );
-
-    // Attach member lists in one extra query rather than N+1 queries per team.
+    
+    // Attach member lists and IDs in one extra query
     const teamIds = teamsResult.rows.map(t => t.id);
     let membersByTeam = {};
+    let memberIdsByTeam = {};
+    
     if (teamIds.length > 0) {
       const membersResult = await pool.query(
-        `select tm.team_id, u.email
-         from team_members tm
-         join auth.users u on u.id = tm.user_id
+        `select tm.team_id, tm.user_id, u.email 
+         from team_members tm 
+         join auth.users u on u.id = tm.user_id 
          where tm.team_id = any($1::uuid[])`,
         [teamIds]
       );
-      membersByTeam = membersResult.rows.reduce((acc, r) => {
-        (acc[r.team_id] ||= []).push(r.email);
-        return acc;
-      }, {});
+      membersResult.rows.forEach(r => {
+        (membersByTeam[r.team_id] ||= []).push(r.email);
+        (memberIdsByTeam[r.team_id] ||= []).push(r.user_id);
+      });
     }
 
-    const teams = teamsResult.rows.map(t => ({ ...t, members: membersByTeam[t.id] || [] }));
+    const teams = teamsResult.rows.map(t => ({ 
+      ...t, 
+      members: membersByTeam[t.id] || [],
+      members_ids: memberIdsByTeam[t.id] || []
+    }));
     res.json(teams);
   } catch (err) {
-    console.error(err);
+    console.error("List Error:", err);
     res.status(500).json({ error: 'Could not load teams' });
   }
 });
