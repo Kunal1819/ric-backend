@@ -2,10 +2,12 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const profilesRouter = require('./routes/profiles');
+const competitionsRouter = require('./routes/competitions');
 
 const app = express();
 const meRouter = require('./routes/me');
 app.use('/api/me', meRouter);
+app.use('/api/competitions', competitionsRouter);
 
 app.use(cors());
 app.use(express.json());
