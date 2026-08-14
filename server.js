@@ -1,18 +1,18 @@
 require('dotenv').config();
-const adminRouter = require('./routes/admin');
-const eventsRouter = require('./routes/events');
 const express = require('express');
 const cors = require('cors');
 
-// 1. Import all routers at the top
+// 1. Import all routers
 const profilesRouter = require('./routes/profiles');
 const competitionsRouter = require('./routes/competitions');
 const meRouter = require('./routes/me');
 const teamsRouter = require('./routes/teams');
+const adminRouter = require('./routes/admin');
+const eventsRouter = require('./routes/events');
 
 const app = express();
 
-// 2. Global Middleware (MUST be above the routes!)
+// 2. Global Middleware
 app.use(cors());
 app.use(express.json());
 
@@ -27,6 +27,6 @@ app.use('/api/teams', teamsRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/events', eventsRouter);
 
-// 5. Start the Server at the very bottom
+// 5. Start the Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`RIC backend listening on port ${PORT}`));
