@@ -1,4 +1,6 @@
 require('dotenv').config();
+const adminRouter = require('./routes/admin');
+const eventsRouter = require('./routes/events');
 const express = require('express');
 const cors = require('cors');
 
@@ -22,6 +24,8 @@ app.use('/api/profiles', profilesRouter);
 app.use('/api/competitions', competitionsRouter);
 app.use('/api/me', meRouter);
 app.use('/api/teams', teamsRouter);
+app.use('/api/admin', adminRouter);
+app.use('/api/events', eventsRouter);
 
 // 5. Start the Server at the very bottom
 const PORT = process.env.PORT || 3000;
