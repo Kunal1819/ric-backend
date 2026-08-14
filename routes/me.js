@@ -7,7 +7,7 @@ const requireAuth = require('../middleware/requireAuth');
 router.get('/', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
-      `select user_id, branch, year, created_at from user_profiles where user_id = $1`,
+      `select user_id, branch, year, full_name, roll_no, mobile_no, created_at from user_profiles where user_id = $1`,
       [req.user.id]
     );
     if (result.rows.length === 0) {
@@ -22,19 +22,19 @@ router.get('/', requireAuth, async (req, res) => {
 
 // 2. Save/Update current user profile (Upsert)
 router.post('/', requireAuth, async (req, res) => {
-  const { branch, year } = req.body;
-  if (!branch || !year) {
-    return res.status(400).json({ error: 'Branch and Year are required' });
+  const { branch, year, full_name, roll_no, mobile_no } = req.body;
+  if (!branch || !year || !full_name) {
+    return res.status(400).json({ error: 'Name, Branch, and Year are required' });
   }
 
   try {
     const result = await pool.query(
-      `insert into user_profiles (user_id, branch, year)
-       values ($1, $2, $3)
+      `insert into user_profiles (user_id, branch, year, full_name, roll_no, mobile_no)
+       values ($1, $2, $3, $4, $5, $6)
        on conflict (user_id)
-       do update set branch = $2, year = $3
+       do update set branch = $2, year = $3, full_name = $4, roll_no = $5, mobile_no = $6
        returning *`,
-      [req.user.id, branch, year]
+      [req.user.id, branch, year, full_name, roll_no, mobile_no]
     );
     res.json(result.rows[0]);
   } catch (err) {
