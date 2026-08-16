@@ -11,7 +11,7 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Lock down all routes in this file
+// Lock down ALL routes in this file automatically
 router.use(requireAuth, requireAdmin);
 
 router.get('/students', async (req, res) => {
@@ -78,11 +78,12 @@ router.get('/analytics', async (req, res) => {
     res.status(500).json({ error: 'Failed to load analytics' });
   }
 });
-// GET all competitions and their registered participants
-router.get('/competitions', requireAuth, async (req, res) => {
+
+// ── GET all competitions and their registered participants ────────
+router.get('/competitions', async (req, res) => {
   try {
     // 1. Get all competitions
-    const compsResult = await pool.query('SELECT * FROM competitions ORDER BY created_at DESC');
+    const compsResult = await pool.query('SELECT * FROM competitions ORDER BY id DESC');
     
     // 2. Get all participants across all teams linked to these competitions
     const participantsResult = await pool.query(`
@@ -107,11 +108,10 @@ router.get('/competitions', requireAuth, async (req, res) => {
   }
 });
 
-// DELETE a competition
-router.delete('/competitions/:id', requireAuth, async (req, res) => {
+// ── DELETE a competition ──────────────────────────────────────────
+router.delete('/competitions/:id', async (req, res) => {
   const { id } = req.params;
   try {
-    // Because of foreign keys, deleting a competition usually deletes associated teams/members automatically
     await pool.query('DELETE FROM competitions WHERE id = $1', [id]);
     res.json({ status: 'deleted' });
   } catch (err) {
