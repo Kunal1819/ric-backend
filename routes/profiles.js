@@ -1,85 +1,97 @@
-const requireAuth = require('../middleware/requireAuth');
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
+const requireAuth = require('../middleware/requireAuth');
 
-function normalizePhone(raw) {
-  if (!raw) return null;
-  const digits = raw.replace(/[^\d]/g, ''); 
-  if (digits.length === 10) return '91' + digits;      
-  if (digits.length === 12 && digits.startsWith('91')) return digits;
-  return digits; 
-}
-
-// 1. GET LISTING — PUBLIC
+// ── GET all profiles (For the Directory) ──────────────────────────
 router.get('/', async (req, res) => {
   const { q } = req.query;
   try {
-    let result;
-    if (q && q.trim()) {
-      result = await pool.query(
-        `select id, full_name, branch, year, pitch, tags, created_at
-         from profiles
-         where to_tsvector('english', full_name || ' ' || branch || ' ' || array_to_string(tags, ' '))
-                @@ plainto_tsquery('english', $1)
-            or branch ilike '%' || $1 || '%'
-            or full_name ilike '%' || $1 || '%'
-         order by created_at desc`,
-        [q.trim()]
-      );
-    } else {
-      result = await pool.query(
-        `select id, full_name, branch, year, pitch, tags, created_at
-         from profiles
-         order by created_at desc`
-      );
+    let query = 'SELECT * FROM profiles ORDER BY created_at DESC';
+    let params = [];
+    
+    // Simple search implementation
+    if (q) {
+      query = `
+        SELECT * FROM profiles 
+        WHERE full_name ILIKE $1 
+        OR branch ILIKE $1 
+        OR pitch ILIKE $1 
+        OR $1 ILIKE ANY(tags) 
+        ORDER BY created_at DESC
+      `;
+      params = [`%${q}%`];
     }
+    
+    const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (err) {
-    console.error("List Error:", err);
-    res.status(500).json({ error: 'Could not load profiles' });
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load profiles' });
   }
 });
 
-// 2. CREATE PROFILE — LOCKED
-router.post('/', requireAuth, async (req, res) => {
-  const { full_name, branch, year, pitch, tags, email, phone } = req.body;
-
-  if (!full_name || !branch || !year || !pitch || !email) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-
-  const tagArray = Array.isArray(tags)
-    ? tags
-    : (typeof tags === 'string' ? tags.split(',').map(t => t.trim().toUpperCase()).filter(Boolean) : []);
-
+// ── GET my own profile (To pre-fill the edit form) ────────────────
+router.get('/me', requireAuth, async (req, res) => {
   try {
-    const result = await pool.query(
-      `insert into profiles (full_name, branch, year, pitch, tags, email, phone, user_id)
-       values ($1, $2, $3, $4, $5, $6, $7, $8)
-       returning id, full_name, branch, year, pitch, tags, created_at`,
-      [full_name, branch, year, pitch, tagArray, email, normalizePhone(phone), req.user.id]
-    );
-    res.status(201).json(result.rows[0]);
+    const result = await pool.query('SELECT * FROM profiles WHERE user_id = $1', [req.user.id]);
+    res.json(result.rows[0] || null);
   } catch (err) {
-    console.error("Create Error:", err);
-    res.status(500).json({ error: 'Could not create profile' });
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load your profile' });
   }
 });
 
-// 3. REVEAL CONTACT — LOCKED
+// ── POST / UPSERT my profile ──────────────────────────────────────
+router.post('/', requireAuth, async (req, res) => {
+  const { full_name, branch, year, email, phone, pitch, tags } = req.body;
+  const tagsArray = tags ? tags.split(',').map(t => t.trim().toUpperCase()).filter(Boolean) : [];
+  
+  try {
+    // ON CONFLICT ensures that if the user_id already exists, it updates instead of crashing
+    const result = await pool.query(
+      `INSERT INTO profiles (user_id, full_name, branch, year, email, phone, pitch, tags)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (user_id) 
+       DO UPDATE SET 
+         full_name = EXCLUDED.full_name,
+         branch = EXCLUDED.branch,
+         year = EXCLUDED.year,
+         email = EXCLUDED.email,
+         phone = EXCLUDED.phone,
+         pitch = EXCLUDED.pitch,
+         tags = EXCLUDED.tags,
+         updated_at = NOW()
+       RETURNING *`,
+      [req.user.id, full_name, branch, year, email, phone, pitch, tagsArray]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to save profile' });
+  }
+});
+
+// ── DELETE my profile ─────────────────────────────────────────────
+router.delete('/me', requireAuth, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM profiles WHERE user_id = $1', [req.user.id]);
+    res.json({ status: 'deleted' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete profile' });
+  }
+});
+
+// ── Reveal contact info (For the directory lock) ──────────────────
 router.get('/:id/reveal', requireAuth, async (req, res) => {
   try {
-    const { rows } = await pool.query('select email, phone from profiles where id = $1', [req.params.id]);
-    
-    if (rows.length === 0) {
-      return res.status(404).json({ error: 'Not found in DB' });
-    }
-
-    res.json(rows[0]);
+     const result = await pool.query('SELECT email, phone FROM profiles WHERE id = $1', [req.params.id]);
+     if (result.rows.length === 0) return res.status(404).json({ error: 'Profile not found' });
+     res.json(result.rows[0]);
   } catch (err) {
-    console.error("DB Trap:", err);
-    res.status(500).json({ error: 'Database crashed reading contact' });
+     console.error(err);
+     res.status(500).json({ error: 'Failed to reveal contact' });
   }
 });
 
