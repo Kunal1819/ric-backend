@@ -3,10 +3,7 @@ const router = express.Router();
 const pool = require('../db');
 const requireAuth = require('../middleware/requireAuth');
 
-// ── List teams (Registered Teams tab) ──────────────────────────────
-// Public — no auth needed to browse who's registered and who's still
-// looking for teammates.
-// 1. GET LISTING — PUBLIC
+// ── 1. List teams (Registered Teams tab) ──────────────────────────────
 router.get('/', async (req, res) => {
   const { competition_id } = req.query;
   try {
@@ -18,33 +15,29 @@ router.get('/', async (req, res) => {
       competition_id ? [competition_id] : []
     );
     
-    // Attach member lists and IDs in one extra query
     const teamIds = teamsResult.rows.map(t => t.id);
     let membersByTeam = {};
     let memberIdsByTeam = {};
     
     if (teamIds.length > 0) {
-      // FIX: Left Join with profiles to get the real full_name instead of just auth.users email
+      // Bulletproof Subquery: Gets real names instead of Gmail IDs
       const membersResult = await pool.query(
-        `select tm.team_id, tm.user_id, u.email, p.full_name 
-         from team_members tm 
-         join auth.users u on u.id = tm.user_id 
-         left join profiles p on p.id = tm.user_id
-         where tm.team_id = any($1::uuid[])`,
+        `SELECT tm.team_id, tm.user_id, 
+          COALESCE((SELECT full_name FROM profiles WHERE id = tm.user_id LIMIT 1), u.email) as display_name 
+         FROM team_members tm 
+         JOIN auth.users u ON u.id = tm.user_id 
+         WHERE tm.team_id = any($1::uuid[])`,
         [teamIds]
       );
       membersResult.rows.forEach(r => {
-        // Prefer full_name, fallback to email if profile doesn't exist
-        const displayName = r.full_name || r.email; 
-        (membersByTeam[r.team_id] ||= []).push(displayName);
+        (membersByTeam[r.team_id] ||= []).push(r.display_name);
         (memberIdsByTeam[r.team_id] ||= []).push(r.user_id);
       });
     }
 
     const teams = teamsResult.rows.map(t => ({ 
       ...t, 
-      members_names: membersByTeam[t.id] || [], // Mapped specifically for your frontend UI
-      members: membersByTeam[t.id] || [],
+      members_names: membersByTeam[t.id] || [], 
       members_ids: memberIdsByTeam[t.id] || []
     }));
     res.json(teams);
@@ -54,7 +47,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ── Create a team ────────────────────────────────────────────────
+// ── 2. Create a team ────────────────────────────────────────────────
 router.post('/', requireAuth, async (req, res) => {
   const { competition_id, name, needed_skills } = req.body;
   if (!competition_id || !name) {
@@ -91,7 +84,7 @@ router.post('/', requireAuth, async (req, res) => {
   }
 });
 
-// ── Request to join a team ──────────────────────────────────────
+// ── 3. Request to join a team ──────────────────────────────────────
 router.post('/:id/request', requireAuth, async (req, res) => {
   const { id } = req.params;
   try {
@@ -114,54 +107,34 @@ router.post('/:id/request', requireAuth, async (req, res) => {
   }
 });
 
-// ── View pending requests (team creator only) ───────────────────
-// 1. GET LISTING — PUBLIC (Inside routes/teams.js)
-router.get('/', async (req, res) => {
-  const { competition_id } = req.query;
+// ── 4. View pending requests (team creator only) ───────────────────
+router.get('/:id/requests', requireAuth, async (req, res) => {
+  const { id } = req.params;
   try {
-    const teamsResult = await pool.query(
-      `select t.*, c.name as competition_name 
-       from teams t join competitions c on c.id = t.competition_id 
-       ${competition_id ? 'where t.competition_id = $1' : ''} 
-       order by t.created_at desc`,
-      competition_id ? [competition_id] : []
-    );
-    
-    const teamIds = teamsResult.rows.map(t => t.id);
-    let membersByTeam = {};
-    let memberIdsByTeam = {};
-    
-    if (teamIds.length > 0) {
-      // FIX: Added COALESCE to aggressively force the full_name to map to the frontend.
-      // Note: If your profiles table uses a column called 'user_id' instead of 'id', 
-      // change 'p.id = tm.user_id' below to 'p.user_id = tm.user_id'.
-      const membersResult = await pool.query(
-        `select tm.team_id, tm.user_id, coalesce(p.full_name, u.email) as display_name 
-         from team_members tm 
-         join auth.users u on u.id = tm.user_id 
-         left join profiles p on p.id = tm.user_id
-         where tm.team_id = any($1::uuid[])`,
-        [teamIds]
-      );
-      membersResult.rows.forEach(r => {
-        (membersByTeam[r.team_id] ||= []).push(r.display_name);
-        (memberIdsByTeam[r.team_id] ||= []).push(r.user_id);
-      });
+    const team = await pool.query(`select created_by from teams where id = $1`, [id]);
+    if (team.rows.length === 0) return res.status(404).json({ error: 'Team not found' });
+    if (team.rows[0].created_by !== req.user.id) {
+      return res.status(403).json({ error: 'Only the team creator can view requests' });
     }
 
-    const teams = teamsResult.rows.map(t => ({ 
-      ...t, 
-      members_names: membersByTeam[t.id] || [], // This feeds directly to the index.html bullet points
-      members_ids: memberIdsByTeam[t.id] || []
-    }));
-    res.json(teams);
+    // Bulletproof Subquery: Gets real names for the requests panel
+    const result = await pool.query(
+      `SELECT jr.id, jr.status, jr.created_at, 
+        COALESCE((SELECT full_name FROM profiles WHERE id = jr.user_id LIMIT 1), u.email) as email
+       FROM join_requests jr 
+       JOIN auth.users u ON u.id = jr.user_id
+       WHERE jr.team_id = $1 AND jr.status = 'pending'
+       ORDER BY jr.created_at ASC`,
+      [id]
+    );
+    res.json(result.rows);
   } catch (err) {
-    console.error("List Error:", err);
-    res.status(500).json({ error: 'Could not load teams' });
+    console.error(err);
+    res.status(500).json({ error: 'Could not load requests' });
   }
 });
 
-// ── Accept / reject a request (team creator only) ────────────────
+// ── 5. Accept / reject a request (team creator only) ────────────────
 router.post('/:id/requests/:requestId/:decision', requireAuth, async (req, res) => {
   const { id, requestId, decision } = req.params;
   if (!['accept', 'reject'].includes(decision)) {
@@ -211,7 +184,7 @@ router.post('/:id/requests/:requestId/:decision', requireAuth, async (req, res) 
   }
 });
 
-// ── Leave a team ──────────────────────────────────────────────────
+// ── 6. Leave a team ──────────────────────────────────────────────────
 router.post('/:id/leave', requireAuth, async (req, res) => {
   const { id } = req.params;
   try {
@@ -229,7 +202,7 @@ router.post('/:id/leave', requireAuth, async (req, res) => {
   }
 });
 
-// ── Transfer leadership ───────────────────────────────────────────
+// ── 7. Transfer leadership ───────────────────────────────────────────
 router.post('/:id/transfer', requireAuth, async (req, res) => {
   const { id } = req.params;
   const { new_leader_id } = req.body;
@@ -256,7 +229,7 @@ router.post('/:id/transfer', requireAuth, async (req, res) => {
   }
 });
 
-// ── Delete a team (creator only) ──────────────────────────────────
+// ── 8. Delete a team (creator only) ──────────────────────────────────
 router.delete('/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
   try {
@@ -273,7 +246,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
   }
 });
 
-// ── Update status / needed_skills (creator only) ──────────────────
+// ── 9. Update status / needed_skills (creator only) ──────────────────
 router.patch('/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
   const { status, needed_skills } = req.body;
