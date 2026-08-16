@@ -10,7 +10,6 @@ router.get('/', async (req, res) => {
     let query = 'SELECT * FROM profiles ORDER BY created_at DESC';
     let params = [];
     
-    // Simple search implementation
     if (q) {
       query = `
         SELECT * FROM profiles 
@@ -42,32 +41,36 @@ router.get('/me', requireAuth, async (req, res) => {
   }
 });
 
-// ── POST / UPSERT my profile ──────────────────────────────────────
+// ── POST / BULLETPROOF SAVE & EDIT PROFILE ────────────────────────
 router.post('/', requireAuth, async (req, res) => {
   const { full_name, branch, year, email, phone, pitch, tags } = req.body;
   const tagsArray = tags ? tags.split(',').map(t => t.trim().toUpperCase()).filter(Boolean) : [];
   
   try {
-    // ON CONFLICT ensures that if the user_id already exists, it updates instead of crashing
-    const result = await pool.query(
-      `INSERT INTO profiles (user_id, full_name, branch, year, email, phone, pitch, tags)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       ON CONFLICT (user_id) 
-       DO UPDATE SET 
-         full_name = EXCLUDED.full_name,
-         branch = EXCLUDED.branch,
-         year = EXCLUDED.year,
-         email = EXCLUDED.email,
-         phone = EXCLUDED.phone,
-         pitch = EXCLUDED.pitch,
-         tags = EXCLUDED.tags,
-         updated_at = NOW()
-       RETURNING *`,
-      [req.user.id, full_name, branch, year, email, phone, pitch, tagsArray]
-    );
+    // 1. Check if the user already has a profile
+    const existing = await pool.query('SELECT id FROM profiles WHERE user_id = $1', [req.user.id]);
+
+    let result;
+    if (existing.rows.length > 0) {
+      // 2. If they exist, UPDATE their profile (EDIT)
+      result = await pool.query(
+        `UPDATE profiles SET 
+           full_name = $1, branch = $2, year = $3, email = $4, phone = $5, pitch = $6, tags = $7
+         WHERE user_id = $8 RETURNING *`,
+        [full_name, branch, year, email, phone, pitch, tagsArray, req.user.id]
+      );
+    } else {
+      // 3. If they don't exist, INSERT a new profile (FIRST TIME REGISTER)
+      result = await pool.query(
+        `INSERT INTO profiles (user_id, full_name, branch, year, email, phone, pitch, tags)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [req.user.id, full_name, branch, year, email, phone, pitch, tagsArray]
+      );
+    }
+    
     res.json(result.rows[0]);
   } catch (err) {
-    console.error(err);
+    console.error("Profile Save Error:", err);
     res.status(500).json({ error: 'Failed to save profile' });
   }
 });
