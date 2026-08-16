@@ -24,21 +24,26 @@ router.get('/', async (req, res) => {
     let memberIdsByTeam = {};
     
     if (teamIds.length > 0) {
+      // FIX: Left Join with profiles to get the real full_name instead of just auth.users email
       const membersResult = await pool.query(
-        `select tm.team_id, tm.user_id, u.email 
+        `select tm.team_id, tm.user_id, u.email, p.full_name 
          from team_members tm 
          join auth.users u on u.id = tm.user_id 
+         left join profiles p on p.id = tm.user_id
          where tm.team_id = any($1::uuid[])`,
         [teamIds]
       );
       membersResult.rows.forEach(r => {
-        (membersByTeam[r.team_id] ||= []).push(r.email);
+        // Prefer full_name, fallback to email if profile doesn't exist
+        const displayName = r.full_name || r.email; 
+        (membersByTeam[r.team_id] ||= []).push(displayName);
         (memberIdsByTeam[r.team_id] ||= []).push(r.user_id);
       });
     }
 
     const teams = teamsResult.rows.map(t => ({ 
       ...t, 
+      members_names: membersByTeam[t.id] || [], // Mapped specifically for your frontend UI
       members: membersByTeam[t.id] || [],
       members_ids: memberIdsByTeam[t.id] || []
     }));
@@ -50,12 +55,6 @@ router.get('/', async (req, res) => {
 });
 
 // ── Create a team ────────────────────────────────────────────────
-// WHY creating a team immediately inserts the creator into team_members
-// in the SAME transaction: without a transaction, a crash between
-// "insert team" and "insert creator as member" leaves a team with zero
-// members and no owner reachable through team_members — an orphaned,
-// broken row. Wrapping both in one transaction means it's impossible
-// for that half-created state to exist.
 router.post('/', requireAuth, async (req, res) => {
   const { competition_id, name, needed_skills } = req.body;
   if (!competition_id || !name) {
@@ -82,8 +81,6 @@ router.post('/', requireAuth, async (req, res) => {
     res.status(201).json(team);
   } catch (err) {
     await client.query('ROLLBACK');
-    // Postgres error 23505 = unique_violation — this is our
-    // "one team per competition" rule firing.
     if (err.code === '23505') {
       return res.status(409).json({ error: "You're already on a team for this competition" });
     }
@@ -127,9 +124,12 @@ router.get('/:id/requests', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Only the team creator can view requests' });
     }
 
+    // FIX: Pulling real name from profiles for pending requests too
     const result = await pool.query(
-      `select jr.id, jr.status, jr.created_at, u.email
-       from join_requests jr join auth.users u on u.id = jr.user_id
+      `select jr.id, jr.status, jr.created_at, coalesce(p.full_name, u.email) as email
+       from join_requests jr 
+       join auth.users u on u.id = jr.user_id
+       left join profiles p on p.id = jr.user_id
        where jr.team_id = $1 and jr.status = 'pending'
        order by jr.created_at asc`,
       [id]
@@ -165,11 +165,6 @@ router.post('/:id/requests/:requestId/:decision', requireAuth, async (req, res) 
     const joinReq = reqResult.rows[0];
 
     if (decision === 'accept') {
-      // This can still fail with 23505 if the requester joined a
-      // DIFFERENT team for this same competition in the time between
-      // requesting and being accepted — the unique index is what
-      // actually protects the "one team per competition" rule here,
-      // not this check, but we surface a friendly message for it.
       await client.query(
         `insert into team_members (team_id, user_id, competition_id) values ($1, $2, $3)`,
         [id, joinReq.user_id, joinReq.competition_id]
@@ -197,11 +192,6 @@ router.post('/:id/requests/:requestId/:decision', requireAuth, async (req, res) 
 });
 
 // ── Leave a team ──────────────────────────────────────────────────
-// WHY the creator is blocked here rather than allowed to leave and
-// orphan the team: you chose "must transfer or delete first" — so this
-// is the one place that rule is actually enforced. Everything else
-// (frontend hiding a "leave" button for creators) is just UX; this
-// check is what makes it a real guarantee.
 router.post('/:id/leave', requireAuth, async (req, res) => {
   const { id } = req.params;
   try {
@@ -255,7 +245,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
     if (team.rows[0].created_by !== req.user.id) {
       return res.status(403).json({ error: 'Only the team creator can delete the team' });
     }
-    await pool.query(`delete from teams where id = $1`, [id]); // cascades to team_members, join_requests
+    await pool.query(`delete from teams where id = $1`, [id]);
     res.json({ status: 'deleted' });
   } catch (err) {
     console.error(err);
