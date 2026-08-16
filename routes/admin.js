@@ -78,5 +78,46 @@ router.get('/analytics', async (req, res) => {
     res.status(500).json({ error: 'Failed to load analytics' });
   }
 });
+// GET all competitions and their registered participants
+router.get('/competitions', requireAuth, async (req, res) => {
+  try {
+    // 1. Get all competitions
+    const compsResult = await pool.query('SELECT * FROM competitions ORDER BY created_at DESC');
+    
+    // 2. Get all participants across all teams linked to these competitions
+    const participantsResult = await pool.query(`
+      SELECT tm.competition_id, coalesce(p.full_name, u.email) as display_name
+      FROM team_members tm
+      JOIN auth.users u ON u.id = tm.user_id
+      LEFT JOIN profiles p ON p.id = tm.user_id
+    `);
+
+    // 3. Map participants to their respective competitions
+    const compData = compsResult.rows.map(comp => ({
+      ...comp,
+      participants: participantsResult.rows
+        .filter(p => p.competition_id === comp.id)
+        .map(p => p.display_name)
+    }));
+
+    res.json(compData);
+  } catch (err) {
+    console.error("Error loading admin competitions:", err);
+    res.status(500).json({ error: 'Could not load competitions' });
+  }
+});
+
+// DELETE a competition
+router.delete('/competitions/:id', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  try {
+    // Because of foreign keys, deleting a competition usually deletes associated teams/members automatically
+    await pool.query('DELETE FROM competitions WHERE id = $1', [id]);
+    res.json({ status: 'deleted' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not delete competition' });
+  }
+});
 
 module.exports = router;

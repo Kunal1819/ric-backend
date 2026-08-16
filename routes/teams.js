@@ -115,29 +115,49 @@ router.post('/:id/request', requireAuth, async (req, res) => {
 });
 
 // ── View pending requests (team creator only) ───────────────────
-router.get('/:id/requests', requireAuth, async (req, res) => {
-  const { id } = req.params;
+// 1. GET LISTING — PUBLIC (Inside routes/teams.js)
+router.get('/', async (req, res) => {
+  const { competition_id } = req.query;
   try {
-    const team = await pool.query(`select created_by from teams where id = $1`, [id]);
-    if (team.rows.length === 0) return res.status(404).json({ error: 'Team not found' });
-    if (team.rows[0].created_by !== req.user.id) {
-      return res.status(403).json({ error: 'Only the team creator can view requests' });
+    const teamsResult = await pool.query(
+      `select t.*, c.name as competition_name 
+       from teams t join competitions c on c.id = t.competition_id 
+       ${competition_id ? 'where t.competition_id = $1' : ''} 
+       order by t.created_at desc`,
+      competition_id ? [competition_id] : []
+    );
+    
+    const teamIds = teamsResult.rows.map(t => t.id);
+    let membersByTeam = {};
+    let memberIdsByTeam = {};
+    
+    if (teamIds.length > 0) {
+      // FIX: Added COALESCE to aggressively force the full_name to map to the frontend.
+      // Note: If your profiles table uses a column called 'user_id' instead of 'id', 
+      // change 'p.id = tm.user_id' below to 'p.user_id = tm.user_id'.
+      const membersResult = await pool.query(
+        `select tm.team_id, tm.user_id, coalesce(p.full_name, u.email) as display_name 
+         from team_members tm 
+         join auth.users u on u.id = tm.user_id 
+         left join profiles p on p.id = tm.user_id
+         where tm.team_id = any($1::uuid[])`,
+        [teamIds]
+      );
+      membersResult.rows.forEach(r => {
+        (membersByTeam[r.team_id] ||= []).push(r.display_name);
+        (memberIdsByTeam[r.team_id] ||= []).push(r.user_id);
+      });
     }
 
-    // FIX: Pulling real name from profiles for pending requests too
-    const result = await pool.query(
-      `select jr.id, jr.status, jr.created_at, coalesce(p.full_name, u.email) as email
-       from join_requests jr 
-       join auth.users u on u.id = jr.user_id
-       left join profiles p on p.id = jr.user_id
-       where jr.team_id = $1 and jr.status = 'pending'
-       order by jr.created_at asc`,
-      [id]
-    );
-    res.json(result.rows);
+    const teams = teamsResult.rows.map(t => ({ 
+      ...t, 
+      members_names: membersByTeam[t.id] || [], // This feeds directly to the index.html bullet points
+      members_ids: memberIdsByTeam[t.id] || []
+    }));
+    res.json(teams);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Could not load requests' });
+    console.error("List Error:", err);
+    res.status(500).json({ error: 'Could not load teams' });
   }
 });
 
