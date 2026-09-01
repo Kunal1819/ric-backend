@@ -11,6 +11,9 @@ const teamsRouter = require('./routes/teams');
 const adminRouter = require('./routes/admin');
 const eventsRouter = require('./routes/events');
 const sihRouter = require('./routes/sih');
+const aavishkarRouter = require('./routes/aavishkar');
+
+
 
 const app = express();
 
@@ -37,6 +40,7 @@ app.use('/api/teams', teamsRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/events', eventsRouter);
 app.use('/api/sih', sihRouter);
+app.use('/api/aavishkar', aavishkarRouter);
 
 // 5. Start the Server
 const PORT = process.env.PORT || 5000;
